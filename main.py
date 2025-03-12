@@ -27,10 +27,11 @@ from matplotlib.patches import Ellipse
 import torch.multiprocessing as mp
 from scipy.special import comb
 from plot import plot_1D, plot_2D_contour, plot_1D_SafeOpt_with_sets, plot_gym, plot_gym_together
-from ground_truth_experiment import ground_truth_experiment
-import gym
+# from ground_truth_experiment import ground_truth_experiment
+# import gym
 import sys
 import os
+import time
 
 # Uncomment the following and clone repo https://git.rwth-aachen.de/quanser-vision/vision-based-furuta-pendulum to conduct Furuta pendulum experiments
 
@@ -41,6 +42,54 @@ import os
 # from IPython import embed as IPS
 
 
+### ALREADY EXISTING ONE COMMENTED OUT ###
+
+
+# class MultiLayerRNN(nn.Module):
+#     def __init__(self, hidden_size, num_layers, num_classes):
+#         super(MultiLayerRNN, self).__init__()
+#         self.hidden_size = hidden_size
+#         self.num_layers = num_layers
+#         # Define the first input branch RNN
+#         self.rnn1 = nn.LSTM(input_size=50, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
+#         # Define the second input branch RNN
+#         self.rnn2 = nn.LSTM(input_size=50, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
+#         # Merge layer
+#         self.merge_layer = nn.Linear(hidden_size * 2, hidden_size)
+#         # Output layer
+#         self.fc = nn.Linear(hidden_size, num_classes)
+
+#     def forward(self, x1, x2):
+#         # Forward pass for the first input branch
+#         out1, _ = self.rnn1(x1)
+#         # Forward pass for the second input branch
+#         out2, _ = self.rnn2(x2)
+#         # Concatenate the outputs of both branches
+#         out = torch.cat((out1, out2), dim=1)
+#         # Merge layer
+#         out = self.merge_layer(out)
+#         # Output layer
+#         out = self.fc(out)
+#         return out
+
+
+# def load_model(model_path, hidden_size, num_layers, num_classes):
+#     model = MultiLayerRNN(hidden_size=hidden_size, num_layers=num_layers, num_classes=num_classes)
+#     model.load_state_dict(torch.load(model_path))
+#     return model
+# def predict(model, input1, input2):
+#     model.eval()
+#     input1_tensor = torch.tensor(input1).unsqueeze(0)
+#     input2_tensor = torch.tensor(input2).unsqueeze(0)
+#     with torch.no_grad():
+#         output = model(input1_tensor, input2_tensor)
+#     return output.item()
+
+## ALREADY EXISTING ONE COMMENTED OUT ###
+
+
+
+### START EDITED RNN CLASS, LOAD AND PREDICT FUNCTIONS ###
 class MultiLayerRNN(nn.Module):
     def __init__(self, hidden_size, num_layers, num_classes):
         super(MultiLayerRNN, self).__init__()
@@ -61,26 +110,34 @@ class MultiLayerRNN(nn.Module):
         # Forward pass for the second input branch
         out2, _ = self.rnn2(x2)
         # Concatenate the outputs of both branches
-        out = torch.cat((out1, out2), dim=1)
+        out = torch.cat((out1, out2), dim=2) ### CHANGED
         # Merge layer
         out = self.merge_layer(out)
         # Output layer
         out = self.fc(out)
         return out
-
-
+    
 def load_model(model_path, hidden_size, num_layers, num_classes):
     model = MultiLayerRNN(hidden_size=hidden_size, num_layers=num_layers, num_classes=num_classes)
     model.load_state_dict(torch.load(model_path))
     return model
+
 def predict(model, input1, input2):
     model.eval()
-    input1_tensor = torch.tensor(input1).unsqueeze(0)
-    input2_tensor = torch.tensor(input2).unsqueeze(0)
+    if isinstance(input1, list):
+        input1 = input1[-1]
+    if isinstance(input2, list):
+        input2 = input2[-1]
+    input1_tensor = torch.tensor(input1).unsqueeze(0).unsqueeze(0)  # shape [1, 1, 1]
+    input2_tensor = torch.tensor(input2).unsqueeze(0).unsqueeze(0)  # shape [1, 1, 1]
+    # repeat dims 50 times to match the expected input ssize
+    input1_tensor = input1_tensor.repeat(1, 1, 50)  # Now shape: [1, 1, 50]
+    input2_tensor = input2_tensor.repeat(1, 1, 50)  # Now shape: [1, 1, 50]
     with torch.no_grad():
         output = model(input1_tensor, input2_tensor)
     return output.item()
 
+### END EDITED RNN CLASS, LOAD AND PREDICT FUNCTIONS ###
 
 
 class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build "new"
@@ -415,6 +472,7 @@ def run(args):
             noise_std, delta_confidence, alpha_bar, m_PAC, gamma_PAC, kappa_PAC,\
             exploration_threshold, delta_cube, num_local_cubes, _ = hyperparameters
     global_cube_list = []
+    list_cubes = []
     dict_mean_RKHS_norms = {}
     dict_recip_variances = {}
     if training:
@@ -435,6 +493,9 @@ def run(args):
     best_lower_bound_others = -np.infty  # init
     skip_global_domain = False  # init
     while X_sample.shape[0] <= num_iterations:
+        print(f'\nIteration {X_sample.shape[0]}\n')
+
+
         try:
             del chosen_cube  # just delete it completely
         except NameError:
@@ -443,15 +504,28 @@ def run(args):
         max_uncertainty_interesting = 0  # max uncertainty of interesting domain
         dict_reuse_GPs = {}
         current_interesting_domains = interesting_domains.copy()
+        
         if (-1, -1) in current_interesting_domains:  # we should iterate with the global domain
             current_interesting_domains.remove((-1, -1))
             domains_to_iterate_through = [(-1, -1), *current_interesting_domains]
         else:
-            domains_to_iterate_through = [(-1, -1), *current_interesting_domains]  # global domain not interesting
+            domains_to_iterate_through = [(-1, -1), *current_interesting_domains]  # global domain not interesting old
+            # domains_to_iterate_through = [ *current_interesting_domains]  # global domain not interesting new
+
         if skip_global_domain:
             domains_to_iterate_through.remove((-1, -1))
         if not training:
             print(f'We have {len(domains_to_iterate_through)} cubes to iterate through.')  # In SafeOpt, this is always 1
+            list_cubes.append(len(domains_to_iterate_through))
+        print(f'Domains to iterate through: {domains_to_iterate_through}')
+        
+        # Check if global cube (-1,-1) is in current interesting domains
+        if (-1, -1) in interesting_domains:
+            print("Initial: Global cube (-1,-1) is in interesting domains.\n")
+        else:
+            print("Initial: Global cube (-1,-1) is not in interesting domains.\n")
+
+        
         for (i, k) in domains_to_iterate_through:  # start off with global domain; sensible heuristic
             skip_global_domain = False  # only valid when starting the while loop and we want to skip the global domain for next round.
             try:
@@ -477,9 +551,24 @@ def run(args):
             cube.expander_routine()
             if cube.best_lower_bound_local > best_lower_bound_others:
                 best_lower_bound_others = cube.best_lower_bound_local
+            if cube.tuple == (-1, -1):
+                
+                # print number of true values in cube.M and cube.G
+                print(f"Number of true values in cube.M: {torch.sum(cube.M)}")
+                print(f"Number of true values in cube.G: {torch.sum(cube.G)}")
+               
             if not torch.any(torch.logical_or(cube.M, cube.G)):
                 if cube.tuple in interesting_domains:
+                    print("### Removed domain from interesting domains is:", cube.tuple)
                     interesting_domains.remove(cube.tuple)
+                    if cube.tuple == (-1, -1):
+                        print("Global domain (-1, -1) was removed. Because M and G are empty.")
+                    #     if not training:
+                    #         list_cubes.append(len(interesting_domains))
+                    #         plt.figure()
+                    #         plt.plot(list_cubes)
+                    #         break
+                        
             else:
                 max_uncertainty_interesting_local = max((cube.ucb - cube.lcb)[torch.logical_or(cube.M, cube.G)])
                 x_new_current = cube.discr_domain[torch.logical_or(cube.M, cube.G)][torch.argmax(cube.var[torch.logical_or(cube.M, cube.G)])]
@@ -489,7 +578,16 @@ def run(args):
                     chosen_cube = cube
                     x_new = x_new_current
                 elif torch.any(torch.all(X_sample == x_new_current, axis=1)) and cube.tuple in interesting_domains:
+                    print("### Removed domain from interesting domains is:", cube.tuple)
                     interesting_domains.remove(cube.tuple)
+                    if cube.tuple == (-1, -1):
+                        print("Global domain (-1, -1) was removed. Because all samples are unsafe.")
+                    #     if not training:
+                    #         list_cubes.append(len(interesting_domains))
+                    #         plt.figure()
+                    #         plt.plot(list_cubes)
+                    #         break
+
         if run_type == 'SafeOpt':
             global_cube_list.append(cube)
         if not training and run_type == 'ours':
@@ -499,6 +597,14 @@ def run(args):
             except:  # there is no chosen cube
                 if not training:
                     print('Our algorithm terminated! There is no input that we can/want to sample next.')
+                    list_cubes.append(len(interesting_domains)) 
+                    plt.figure()
+                    plt.plot(list_cubes)
+                    plt.xlabel('Iteration number')
+                    plt.ylabel('Number of cubes')
+                    plt.title('Number of cubes vs iteration number')
+                    plt.show()
+
                 break
 
             dict_local_RKHS_norms = chosen_cube.compute_confidence_intervals_evaluation(RNN_model, m_PAC, alpha_bar, PAC=True)
@@ -510,13 +616,23 @@ def run(args):
                 if not torch.any(torch.all(X_sample == x_new_current, axis=1)):
                     x_new = x_new_current
                     print(f'The chosen cube is {chosen_tuple} and the input is {x_new}, with PAC RKHS norm {chosen_cube.B}.')
+                    if chosen_cube.tuple == (-1, -1):
+                        print("############################# ALERT #############################")
             if not torch.any(torch.logical_or(chosen_cube.M, chosen_cube.G)) or torch.any(torch.all(X_sample == x_new_current, axis=1)):
                 if len(interesting_domains) == 0:
                     if not training:
                         print('Our algorithm terminated! There is no input that we can/want to sample next.')
                     break
                 if chosen_cube.tuple in interesting_domains:
+                    print("### Removed domain from interesting domains is:", chosen_cube.tuple)
                     interesting_domains.remove(chosen_cube.tuple)
+                    if chosen_cube.tuple == (-1, -1):
+                        print("Global domain (-1, -1) was removed. Because double-checked.")
+                    #     if not training:
+                    #         list_cubes.append(len(interesting_domains))
+                    #         plt.figure()
+                    #         plt.plot(list_cubes)
+                    #         break
                     print('Skipping this domain after PAC check')
                     if chosen_cube.tuple == (-1, -1):
                         skip_global_domain = True
@@ -546,17 +662,46 @@ def run(args):
                 pickle.dump(Y_sample, handle, protocol=pickle.HIGHEST_PROTOCOL)
             print(f'Saved data. We currently gathered {len(Y_sample)} samples.')
 
+        # print(f'Interesting domains before: {interesting_domains}')
+
+        #print RKHS norm estimation for all cubes cube.B
+        for cube in global_cube_list:
+            print(f'RKHS norm estimation for cube {cube.tuple}: {cube.B}')
 
 
+        # Check if global cube (-1,-1) is in current interesting domains
+        if (-1, -1) in interesting_domains:
+            print("Before cube creation, Global cube (-1,-1) is in interesting domains.")
+        else:
+            print("Before cube creation, Global cube (-1,-1) is not in interesting domains.")
+
+        # if not global_approach:
+        #     X_distance = torch.max(torch.abs(X_sample - x_new), dim=1).values
+        #     effect_tensor = X_distance.unsqueeze(1) <= torch.arange(1, num_local_cubes + 1) * delta_cube
+        #     indices = torch.nonzero(effect_tensor, as_tuple=False)
+        #     indices_set = {(i.item(), k.item()) for i, k in indices}
+        #     interesting_domains |= indices_set # set union #### 
+        #     interesting_domains.add((-1, -1))
+
+
+        # print(f'Interesting domains after: {interesting_domains}')
 
         # Which sub-domain changed through this new sample?
-        if not global_approach:
+        if not global_approach and chosen_cube.tuple == (-1, -1):
             X_distance = torch.max(torch.abs(X_sample - x_new), dim=1).values
             effect_tensor = X_distance.unsqueeze(1) <= torch.arange(1, num_local_cubes + 1) * delta_cube
             indices = torch.nonzero(effect_tensor, as_tuple=False)
             indices_set = {(i.item(), k.item()) for i, k in indices}
-            interesting_domains |= indices_set  # set union
+            interesting_domains |= {max(indices_set)}# set union #### added max operator here
             interesting_domains.add((-1, -1))
+
+        # Check if global cube (-1,-1) is in current interesting domains
+        if (-1, -1) in interesting_domains:
+            print("After cube creation, Global cube (-1,-1) is in interesting domains.")
+        else:
+            print("After cube creation, Global cube (-1,-1) is not in interesting domains.")
+        if run_type == 'ours':
+            time.sleep(1)
         x_new_last_iteration = copy.deepcopy(x_new)
         del x_new  # There is no x_new for the next iteration
     if training:
@@ -581,7 +726,7 @@ if __name__ == '__main__':
     noise_std = 0.01  # standard deviation of noise, and in GPs
     delta_confidence = 0.01  # yields 99% confidence for safety proof.
     num_safe_points = 1  # singleton safe set
-    num_iterations = 30  # iterations. We used 50 iterations to get training data and for the Gym experiments, 30 otherwise
+    num_iterations = 500  # iterations. We used 50 iterations to get training data and for the Gym experiments, 30 otherwise
     exploration_threshold = 0.1  # exploration threshold, see Sui et al. 2015
     n_dimensions = 1
     points_per_axis = 1000  # 30 for 4D, 1000 for 1D, 500 for 2D, 100 for 3D, 8 for 6D. Depends on computational resources, also a "hyperparameter"
@@ -589,7 +734,7 @@ if __name__ == '__main__':
     # Initialize our algorithm
     X_plot = compute_X_plot(n_dimensions, points_per_axis)
     delta_cube = 0.1  # hyperparameter
-    num_local_cubes = 5
+    num_local_cubes = 1
 
     introductory_example = False  # Fig 1 if True, other numerical experiments if False
     if introductory_example and Gym:
@@ -598,7 +743,7 @@ if __name__ == '__main__':
         compute_all_sets = True  # this is only if we want to plot the sets, Figure 1 of paper.
     else:
         compute_all_sets = False
-    reproduce_experiments = True  # set to True if you want to reproduce the experiments of either introductory or numerical example
+    reproduce_experiments = False  # set to True if you want to reproduce the experiments of either introductory or numerical example
 
     # For training
     if training:
@@ -641,11 +786,14 @@ if __name__ == '__main__':
                     Y_sample = dill.load(handle)
             elif not Gym and n_dimensions == 1:
                 noise_std = 0.01
-                with open('Github/gt.pickle', 'rb') as handle:
+                # with open('Github/gt.pickle', 'rb') as handle:
+                with open('1D_toy_experiments/gt.pickle', 'rb') as handle:
                     gt = dill.load(handle)
-                with open('Github/X_sample.pickle', 'rb') as handle:
+                # with open('Github/X_sample.pickle', 'rb') as handle:
+                with open('1D_toy_experiments/X_sample.pickle', 'rb') as handle:
                     X_sample = dill.load(handle)
-                with open('Github/Y_sample.pickle', 'rb') as handle:
+                # with open('Github/Y_sample.pickle', 'rb') as handle:
+                with open('1D_toy_experiments/Y_sample.pickle', 'rb') as handle:
                     Y_sample = dill.load(handle)
             elif not Gym and n_dimensions == 2:
                 with open('Experiments/2D_toy_experiments/gt.pickle', 'rb') as handle:
