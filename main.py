@@ -485,7 +485,7 @@ def run(args):
         Y_sample = Y_sample_init.clone()
     if not global_approach:
         interesting_domains = set((i, k) for i in range(num_safe_points) for k in range(num_local_cubes))
-        interesting_domains.add(tuple([-1, -1]))
+        # interesting_domains.add(tuple([-1, -1]))
     elif global_approach:
         interesting_domains={tuple([-1, -1])}
 
@@ -505,12 +505,12 @@ def run(args):
         dict_reuse_GPs = {}
         current_interesting_domains = interesting_domains.copy()
         
-        if (-1, -1) in current_interesting_domains:  # we should iterate with the global domain
-            current_interesting_domains.remove((-1, -1))
-            domains_to_iterate_through = [(-1, -1), *current_interesting_domains]
-        else:
-            domains_to_iterate_through = [(-1, -1), *current_interesting_domains]  # global domain not interesting old
-            # domains_to_iterate_through = [ *current_interesting_domains]  # global domain not interesting new
+        # if (-1, -1) in current_interesting_domains:  # we should iterate with the global domain
+            # current_interesting_domains.remove((-1, -1))
+        domains_to_iterate_through = [*current_interesting_domains]
+        # else:
+        #     domains_to_iterate_through = [(-1, -1), *current_interesting_domains]  # global domain not interesting old
+        #     # domains_to_iterate_through = [ *current_interesting_domains]  # global domain not interesting new
 
         if skip_global_domain:
             domains_to_iterate_through.remove((-1, -1))
@@ -525,7 +525,8 @@ def run(args):
         else:
             print("Initial: Global cube (-1,-1) is not in interesting domains.\n")
 
-        
+        last_chosen_cube_tuple = None
+
         for (i, k) in domains_to_iterate_through:  # start off with global domain; sensible heuristic
             skip_global_domain = False  # only valid when starting the while loop and we want to skip the global domain for next round.
             try:
@@ -561,13 +562,16 @@ def run(args):
                 if cube.tuple in interesting_domains:
                     print("### Removed domain from interesting domains is:", cube.tuple)
                     interesting_domains.remove(cube.tuple)
-                    if cube.tuple == (-1, -1):
-                        print("Global domain (-1, -1) was removed. Because M and G are empty.")
-                    #     if not training:
-                    #         list_cubes.append(len(interesting_domains))
-                    #         plt.figure()
-                    #         plt.plot(list_cubes)
-                    #         break
+                    print('interesting_domains', interesting_domains)
+                    print("Local domain is removed. Because M and G are empty.")
+
+                    if len(interesting_domains) == 0 and not global_approach:
+                        print("No interesting domains left.")
+                        interesting_domains.add((-1, -1))
+                        domains_to_iterate_through = [(-1, -1)]
+                        print("Added global domain.")
+
+                        break
                         
             else:
                 max_uncertainty_interesting_local = max((cube.ucb - cube.lcb)[torch.logical_or(cube.M, cube.G)])
@@ -580,13 +584,73 @@ def run(args):
                 elif torch.any(torch.all(X_sample == x_new_current, axis=1)) and cube.tuple in interesting_domains:
                     print("### Removed domain from interesting domains is:", cube.tuple)
                     interesting_domains.remove(cube.tuple)
-                    if cube.tuple == (-1, -1):
-                        print("Global domain (-1, -1) was removed. Because all samples are unsafe.")
-                    #     if not training:
-                    #         list_cubes.append(len(interesting_domains))
-                    #         plt.figure()
-                    #         plt.plot(list_cubes)
-                    #         break
+                    print("Local domain is removed. Because all samples are unsafe.")
+
+                    if len(interesting_domains) == 0 and not global_approach:
+                        print("No interesting domains left.")
+                        interesting_domains.add((-1, -1))
+                        domains_to_iterate_through = [(-1, -1)]
+                        print("Added global domain.")
+
+                        break
+
+         
+        if not global_approach and (-1, -1) in interesting_domains:
+            for (i, k) in domains_to_iterate_through:  # start off with global domain; sensible heuristic
+                skip_global_domain = False  # only valid when starting the while loop and we want to skip the global domain for next round.
+                try:
+                    del cube  # reset
+                except NameError:
+                    pass
+                cube = safe_BO(delta_confidence=delta_confidence, delta_cube=delta_cube, noise_std=noise_std, tuple_ik=(i, k), X_plot=X_plot, X_sample=X_sample,
+                                Y_sample=Y_sample, safety_threshold=gt.safety_threshold, exploration_threshold=exploration_threshold, gt=gt,
+                                compute_local_X_plot=compute_local_X_plot, compute_all_sets=compute_all_sets)  # all samples that we currently have
+                cube.compute_model(dict_reuse_GPs, gpr=GPRegressionModel)
+                cube.compute_mean_var()
+                if run_type == 'ours':
+                    dict_mean_RKHS_norms, dict_recip_variances = cube.save_data_for_RNN_training(dict_mean_RKHS_norms, dict_recip_variances, x_new_last_iteration)  # RKHS norm and reciprocal covariance integral
+                if training:
+                    dict_local_RKHS_norms = cube.compute_confidence_intervals_training(dict_local_RKHS_norms=dict_local_RKHS_norms)
+                else:
+                    if run_type == 'ours':
+                        cube.compute_confidence_intervals_evaluation(RNN_model=RNN_model, m_PAC=m_PAC, alpha_bar=alpha_bar, PAC=False)  # We do not need PAC bounds yet; improves speed. PAC bounds essential for sampling
+                    elif run_type == 'SafeOpt':
+                        cube.compute_confidence_intervals_evaluation(RKHS_norm_guessed=B)
+                cube.compute_safe_set()
+                cube.maximizer_routine(best_lower_bound_others=best_lower_bound_others)
+                cube.expander_routine()
+                if cube.best_lower_bound_local > best_lower_bound_others:
+                    best_lower_bound_others = cube.best_lower_bound_local
+                if cube.tuple == (-1, -1):
+                    
+                    # print number of true values in cube.M and cube.G
+                    print(f"Number of true values in cube.M: {torch.sum(cube.M)}")
+                    print(f"Number of true values in cube.G: {torch.sum(cube.G)}")
+                
+                if not torch.any(torch.logical_or(cube.M, cube.G)):
+                    if cube.tuple in interesting_domains:
+                        print("### Removed domain from interesting domains is:", cube.tuple)
+                        interesting_domains.remove(cube.tuple)
+                        print('interesting_domains', interesting_domains)
+                        if cube.tuple == (-1, -1):
+                            print("Global domain (-1, -1) was removed. Because M and G are empty.")
+       
+                            
+                else:
+                    max_uncertainty_interesting_local = max((cube.ucb - cube.lcb)[torch.logical_or(cube.M, cube.G)])
+                    x_new_current = cube.discr_domain[torch.logical_or(cube.M, cube.G)][torch.argmax(cube.var[torch.logical_or(cube.M, cube.G)])]
+                    if not torch.any(torch.all(X_sample == x_new_current, axis=1)) and max_uncertainty_interesting_local > max_uncertainty_interesting:
+                        max_uncertainty_interesting = max_uncertainty_interesting_local
+                        chosen_tuple = cube.tuple
+                        chosen_cube = cube
+                        x_new = x_new_current
+                    elif torch.any(torch.all(X_sample == x_new_current, axis=1)) and cube.tuple in interesting_domains:
+                        print("### Removed domain from interesting domains is:", cube.tuple)
+                        interesting_domains.remove(cube.tuple)
+                        print('interesting_domains', interesting_domains)
+                        if cube.tuple == (-1, -1):
+                            print("Global domain (-1, -1) was removed. Because all samples are unsafe.")
+      
 
         if run_type == 'SafeOpt':
             global_cube_list.append(cube)
@@ -596,7 +660,7 @@ def run(args):
                 auxx = chosen_cube.tuple  # auxiliary action
             except:  # there is no chosen cube
                 if not training:
-                    print('Our algorithm terminated! There is no input that we can/want to sample next.')
+                    print('Our algorithm terminated! There is no input that we can/want to sample next. ooo')
                     list_cubes.append(len(interesting_domains)) 
                     plt.figure()
                     plt.plot(list_cubes)
@@ -621,18 +685,22 @@ def run(args):
             if not torch.any(torch.logical_or(chosen_cube.M, chosen_cube.G)) or torch.any(torch.all(X_sample == x_new_current, axis=1)):
                 if len(interesting_domains) == 0:
                     if not training:
-                        print('Our algorithm terminated! There is no input that we can/want to sample next.')
+                        print('Our algorithm terminated! There is no input that we can/want to sample next.o ')
                     break
                 if chosen_cube.tuple in interesting_domains:
                     print("### Removed domain from interesting domains is:", chosen_cube.tuple)
                     interesting_domains.remove(chosen_cube.tuple)
-                    if chosen_cube.tuple == (-1, -1):
-                        print("Global domain (-1, -1) was removed. Because double-checked.")
-                    #     if not training:
-                    #         list_cubes.append(len(interesting_domains))
-                    #         plt.figure()
-                    #         plt.plot(list_cubes)
-                    #         break
+                    print("Local domain is removed. Because double-checked.")
+
+                    if len(interesting_domains) == 0 and not global_approach:
+                        print("No interesting domains left.")
+                        interesting_domains.add((-1, -1))
+                        domains_to_iterate_through = [(-1, -1)]
+                        print("Added global domain.")
+
+                        break
+                     
+
                     print('Skipping this domain after PAC check')
                     if chosen_cube.tuple == (-1, -1):
                         skip_global_domain = True
@@ -643,7 +711,7 @@ def run(args):
                 # Auxiliary action but no print
                 aux = copy.deepcopy(x_new)
             except:
-                print(f'{run_type} terminated! There is no input that we can/want to sample next.')
+                print(f'{run_type} terminated! There is no input that we can/want to sample next. oo')
                 break
         if not training or training:
             pass
@@ -685,7 +753,7 @@ def run(args):
 
 
         # print(f'Interesting domains after: {interesting_domains}')
-
+        last_chosen_cube_tuple = chosen_cube.tuple
         # Which sub-domain changed through this new sample?
         if not global_approach and chosen_cube.tuple == (-1, -1):
             X_distance = torch.max(torch.abs(X_sample - x_new), dim=1).values
@@ -693,15 +761,14 @@ def run(args):
             indices = torch.nonzero(effect_tensor, as_tuple=False)
             indices_set = {(i.item(), k.item()) for i, k in indices}
             interesting_domains |= {max(indices_set)}# set union #### added max operator here
-            interesting_domains.add((-1, -1))
+            interesting_domains.remove((-1, -1))
 
         # Check if global cube (-1,-1) is in current interesting domains
         if (-1, -1) in interesting_domains:
             print("After cube creation, Global cube (-1,-1) is in interesting domains.")
         else:
             print("After cube creation, Global cube (-1,-1) is not in interesting domains.")
-        if run_type == 'ours':
-            time.sleep(1)
+
         x_new_last_iteration = copy.deepcopy(x_new)
         del x_new  # There is no x_new for the next iteration
     if training:
@@ -743,7 +810,7 @@ if __name__ == '__main__':
         compute_all_sets = True  # this is only if we want to plot the sets, Figure 1 of paper.
     else:
         compute_all_sets = False
-    reproduce_experiments = False  # set to True if you want to reproduce the experiments of either introductory or numerical example
+    reproduce_experiments = True  # set to True if you want to reproduce the experiments of either introductory or numerical example
 
     # For training
     if training:
