@@ -584,7 +584,7 @@ def run(args):
                 elif torch.any(torch.all(X_sample == x_new_current, axis=1)) and cube.tuple in interesting_domains:
                     print("### Removed domain from interesting domains is:", cube.tuple)
                     interesting_domains.remove(cube.tuple)
-                    print("Local domain is removed. Because all samples are unsafe.")
+                    print("Local domain is removed. Not interesting anymore.")
 
                     if len(interesting_domains) == 0 and not global_approach:
                         print("No interesting domains left.")
@@ -594,7 +594,7 @@ def run(args):
 
                         break
 
-         
+        print("Domains to iterate through:", domains_to_iterate_through)
         if not global_approach and (-1, -1) in interesting_domains:
             for (i, k) in domains_to_iterate_through:  # start off with global domain; sensible heuristic
                 skip_global_domain = False  # only valid when starting the while loop and we want to skip the global domain for next round.
@@ -810,7 +810,7 @@ if __name__ == '__main__':
         compute_all_sets = True  # this is only if we want to plot the sets, Figure 1 of paper.
     else:
         compute_all_sets = False
-    reproduce_experiments = True  # set to True if you want to reproduce the experiments of either introductory or numerical example
+    reproduce_experiments = False  # set to True if you want to reproduce the experiments of either introductory or numerical example
 
     # For training
     if training:
