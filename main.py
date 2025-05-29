@@ -33,63 +33,7 @@ import sys
 import os
 import time
 
-# Uncomment the following and clone repo https://git.rwth-aachen.de/quanser-vision/vision-based-furuta-pendulum to conduct Furuta pendulum experiments
 
-# sys.path.insert(1,  './vision-based-furuta-pendulum-master')
-# from gym_brt.envs import QubeBalanceEnv, QubeSwingupEnv
-# from gym_brt.control.control import QubeHoldControl, QubeFlipUpControl
-# warnings.filterwarnings("ignore", category=np.VisibleDeprecationWarning)
-# from IPython import embed as IPS
-
-
-### ALREADY EXISTING ONE COMMENTED OUT ###
-
-
-# class MultiLayerRNN(nn.Module):
-#     def __init__(self, hidden_size, num_layers, num_classes):
-#         super(MultiLayerRNN, self).__init__()
-#         self.hidden_size = hidden_size
-#         self.num_layers = num_layers
-#         # Define the first input branch RNN
-#         self.rnn1 = nn.LSTM(input_size=50, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
-#         # Define the second input branch RNN
-#         self.rnn2 = nn.LSTM(input_size=50, hidden_size=hidden_size, num_layers=num_layers, batch_first=True)
-#         # Merge layer
-#         self.merge_layer = nn.Linear(hidden_size * 2, hidden_size)
-#         # Output layer
-#         self.fc = nn.Linear(hidden_size, num_classes)
-
-#     def forward(self, x1, x2):
-#         # Forward pass for the first input branch
-#         out1, _ = self.rnn1(x1)
-#         # Forward pass for the second input branch
-#         out2, _ = self.rnn2(x2)
-#         # Concatenate the outputs of both branches
-#         out = torch.cat((out1, out2), dim=1)
-#         # Merge layer
-#         out = self.merge_layer(out)
-#         # Output layer
-#         out = self.fc(out)
-#         return out
-
-
-# def load_model(model_path, hidden_size, num_layers, num_classes):
-#     model = MultiLayerRNN(hidden_size=hidden_size, num_layers=num_layers, num_classes=num_classes)
-#     model.load_state_dict(torch.load(model_path))
-#     return model
-# def predict(model, input1, input2):
-#     model.eval()
-#     input1_tensor = torch.tensor(input1).unsqueeze(0)
-#     input2_tensor = torch.tensor(input2).unsqueeze(0)
-#     with torch.no_grad():
-#         output = model(input1_tensor, input2_tensor)
-#     return output.item()
-
-## ALREADY EXISTING ONE COMMENTED OUT ###
-
-
-
-### START EDITED RNN CLASS, LOAD AND PREDICT FUNCTIONS ###
 class MultiLayerRNN(nn.Module):
     def __init__(self, hidden_size, num_layers, num_classes):
         super(MultiLayerRNN, self).__init__()
@@ -136,8 +80,6 @@ def predict(model, input1, input2):
     with torch.no_grad():
         output = model(input1_tensor, input2_tensor)
     return output.item()
-
-### END EDITED RNN CLASS, LOAD AND PREDICT FUNCTIONS ###
 
 
 class GPRegressionModel(gpytorch.models.ExactGP):  # this model has to be build "new"
@@ -197,12 +139,18 @@ def initial_safe_samples(gt, num_safe_points):  # for toy examples and introduct
 
 
 class ground_truth():
-    def __init__(self, num_center_points, X_plot, RKHS_norm):
+    def __init__(self, num_center_points, X_plot, RKHS_norm, seed=None):
         def fun(kernel, alpha):
             return lambda X: kernel(X.reshape(-1, self.X_center.shape[1]), self.X_center).detach().numpy() @ alpha
         # For ground truth
         self.X_plot = X_plot
         self.RKHS_norm = RKHS_norm
+        
+        # Set random seed if provided
+        if seed is not None:
+            torch.manual_seed(seed)
+            np.random.seed(seed)
+            
         random_indices_center = torch.randint(high=self.X_plot.shape[0], size=(num_center_points,))
         self.X_center = self.X_plot[random_indices_center]
         alpha = np.random.uniform(-1, 1, size=self.X_center.shape[0])
@@ -291,14 +239,10 @@ class safe_BO():
         if convert_to_hashable(self.x_sample) in dict_reuse_GPs.keys():
             self.model, self.K = dict_reuse_GPs[convert_to_hashable(self.x_sample)]
         else:
-            if Furuta:
-                self.model = gpr(train_x=self.x_sample, train_y=self.y_sample, noise_std=self.noise_std, lengthscale=0.2)  # only change of the lengthscale
-            else: 
-                self.model = gpr(train_x=self.x_sample, train_y=self.y_sample, noise_std=self.noise_std, lengthscale=0.1)
+            
+            self.model = gpr(train_x=self.x_sample, train_y=self.y_sample, noise_std=self.noise_std, lengthscale=0.1)
             self.K = self.model(self.x_sample).covariance_matrix
-            # model.train()
             dict_reuse_GPs[convert_to_hashable(self.x_sample)] = [self.model, self.K]
-        # return model
 
     def compute_mean_var(self):  # GP model predictions
         self.model.eval()
@@ -408,6 +352,7 @@ class safe_BO():
         self.G = s
 
     def compute_beta(self):
+        # Depending on situation we need to change
         # Fiedler et al. 2024 Equation (7); based on Abbasi-Yadkori 2013
         inside_log = torch.det(torch.eye(self.x_sample.shape[0]) + (1/self.noise_std*self.K))
         inside_sqrt = self.noise_std*torch.log(inside_log) - (2*self.noise_std*torch.log(torch.tensor(self.delta_confidence)))
@@ -428,7 +373,7 @@ class safe_BO():
             raise Exception("Current implementation only works with radial kernels.")
         matrix_containing_kernel_values = self.model.kernel(x, x_prime).evaluate()  # here we can have problems with the size of the matrix
         return torch.sqrt(2-2*matrix_containing_kernel_values)
-
+    
     def save_data_for_RNN_training(self, dict_mean_RKHS_norms, dict_recip_variances, x_last_iteration):
         if convert_to_hashable(self.tuple) not in dict_mean_RKHS_norms.keys():
             alpha = torch.inverse(self.K+self.noise_std**2*torch.eye(self.K.shape[0])) @ self.y_sample
@@ -454,40 +399,26 @@ class safe_BO():
             self.RKHS_norm_mean_function_list = dict_mean_RKHS_norms[self.tuple]
         return dict_mean_RKHS_norms, dict_recip_variances
 
+ 
 
 def run(args):
-    training = args[-1]
-    if training:  # boolean whether we are training or not
-        hyperparameters, num_iterations, X_plot, RKHS_norm = args[:-1]
-        global_approach = False
-        noise_std, delta_confidence, exploration_threshold, delta_cube, num_local_cubes, compute_local_X_plot = hyperparameters
-    if not training:
-        hyperparameters, num_iterations, X_sample, Y_sample, gt, X_plot, global_approach, RNN_model, compute_local_X_plot = args[:-1]
-        run_type = hyperparameters[-1]
-        if run_type == 'SafeOpt':  # to recreate SafeOpt. This uses no localization and keeps the a priori guess on the RKHS norm
-            delta_cube = 1
-            noise_std, delta_confidence, exploration_threshold, B, compute_all_sets, _ = hyperparameters
-        else:
-            compute_all_sets = False
-            noise_std, delta_confidence, alpha_bar, m_PAC, gamma_PAC, kappa_PAC,\
-            exploration_threshold, delta_cube, num_local_cubes, _ = hyperparameters
+
+    hyperparameters, num_iterations, X_sample, Y_sample, gt, X_plot, global_approach, RNN_model, compute_local_X_plot = args
+
+ 
+    compute_all_sets = False
+    noise_std, delta_confidence, alpha_bar, m_PAC, gamma_PAC, kappa_PAC,\
+    exploration_threshold, delta_cube, num_local_cubes = hyperparameters
+
     global_cube_list = []
     list_cubes = []
     dict_mean_RKHS_norms = {}
     dict_recip_variances = {}
-    if training:
-        run_type = 'ours'
-        dict_local_RKHS_norms = {}
-        list_training = []  # we can do that a posteriori
-        gt = ground_truth(num_center_points=np.random.choice(range(600, 1000)), X_plot=X_plot, RKHS_norm=RKHS_norm)
-        X_sample_init, Y_sample_init = initial_safe_samples(gt=gt, num_safe_points=num_safe_points)
-        X_sample = X_sample_init.clone()
-        Y_sample = Y_sample_init.clone()
+
     if not global_approach:
         interesting_domains = set((i, k) for i in range(num_safe_points) for k in range(num_local_cubes))
         interesting_domains.add(tuple([-1, -1]))
-    elif global_approach:
-        interesting_domains={tuple([-1, -1])}
+   
 
     x_new_last_iteration = torch.tensor([-torch.inf for _ in range(n_dimensions)])  # init
     best_lower_bound_others = -np.infty  # init
@@ -514,9 +445,7 @@ def run(args):
 
         if skip_global_domain:
             domains_to_iterate_through.remove((-1, -1))
-        if not training:
-            print(f'We have {len(domains_to_iterate_through)} cubes to iterate through.')  # In SafeOpt, this is always 1
-            list_cubes.append(len(domains_to_iterate_through))
+    
         print(f'Domains to iterate through: {domains_to_iterate_through}')
         
         # Check if global cube (-1,-1) is in current interesting domains
@@ -537,37 +466,18 @@ def run(args):
                             compute_local_X_plot=compute_local_X_plot, compute_all_sets=compute_all_sets)  # all samples that we currently have
             cube.compute_model(dict_reuse_GPs, gpr=GPRegressionModel)
             cube.compute_mean_var()
-            if run_type == 'ours':
-                dict_mean_RKHS_norms, dict_recip_variances = cube.save_data_for_RNN_training(dict_mean_RKHS_norms, dict_recip_variances, x_new_last_iteration)  # RKHS norm and reciprocal covariance integral
-            if training:
-                dict_local_RKHS_norms = cube.compute_confidence_intervals_training(dict_local_RKHS_norms=dict_local_RKHS_norms)
-            else:
-                if run_type == 'ours':
-                    cube.compute_confidence_intervals_evaluation(RNN_model=RNN_model, m_PAC=m_PAC, alpha_bar=alpha_bar, PAC=False)  # We do not need PAC bounds yet; improves speed. PAC bounds essential for sampling
-                elif run_type == 'SafeOpt':
-                    cube.compute_confidence_intervals_evaluation(RKHS_norm_guessed=B)
+            dict_mean_RKHS_norms, dict_recip_variances = cube.save_data_for_RNN_training(dict_mean_RKHS_norms, dict_recip_variances, x_new_last_iteration)  # RKHS norm and reciprocal covariance integral
+            cube.compute_confidence_intervals_evaluation(RNN_model=RNN_model, m_PAC=m_PAC, alpha_bar=alpha_bar, PAC=False)  # We do not need PAC bounds yet; improves speed. PAC bounds essential for sampling
             cube.compute_safe_set()
             cube.maximizer_routine(best_lower_bound_others=best_lower_bound_others)
             cube.expander_routine()
             if cube.best_lower_bound_local > best_lower_bound_others:
                 best_lower_bound_others = cube.best_lower_bound_local
-            if cube.tuple == (-1, -1):
-                
-                # print number of true values in cube.M and cube.G
-                print(f"Number of true values in cube.M: {torch.sum(cube.M)}")
-                print(f"Number of true values in cube.G: {torch.sum(cube.G)}")
+     
                
             if not torch.any(torch.logical_or(cube.M, cube.G)):
                 if cube.tuple in interesting_domains:
-                    print("### Removed domain from interesting domains is:", cube.tuple)
                     interesting_domains.remove(cube.tuple)
-                    if cube.tuple == (-1, -1):
-                        print("Global domain (-1, -1) was removed. Because M and G are empty.")
-                    #     if not training:
-                    #         list_cubes.append(len(interesting_domains))
-                    #         plt.figure()
-                    #         plt.plot(list_cubes)
-                    #         break
                         
             else:
                 max_uncertainty_interesting_local = max((cube.ucb - cube.lcb)[torch.logical_or(cube.M, cube.G)])
@@ -578,139 +488,75 @@ def run(args):
                     chosen_cube = cube
                     x_new = x_new_current
                 elif torch.any(torch.all(X_sample == x_new_current, axis=1)) and cube.tuple in interesting_domains:
-                    print("### Removed domain from interesting domains is:", cube.tuple)
                     interesting_domains.remove(cube.tuple)
-                    if cube.tuple == (-1, -1):
-                        print("Global domain (-1, -1) was removed. Because all samples are unsafe.")
-                    #     if not training:
-                    #         list_cubes.append(len(interesting_domains))
-                    #         plt.figure()
-                    #         plt.plot(list_cubes)
-                    #         break
+                
 
-        if run_type == 'SafeOpt':
-            global_cube_list.append(cube)
-        if not training and run_type == 'ours':
-            # Now with PAC bounds!
-            try:  # there is a chosen cube
-                auxx = chosen_cube.tuple  # auxiliary action
-            except:  # there is no chosen cube
-                if not training:
-                    print('Our algorithm terminated! There is no input that we can/want to sample next.')
-                    list_cubes.append(len(interesting_domains)) 
-                    plt.figure()
-                    plt.plot(list_cubes)
-                    plt.xlabel('Iteration number')
-                    plt.ylabel('Number of cubes')
-                    plt.title('Number of cubes vs iteration number')
-                    plt.show()
+        # Now with PAC bounds!
+        try:  # there is a chosen cube
+            auxx = chosen_cube.tuple  # auxiliary action
+        except:  # there is no chosen cube
+            print('Our algorithm terminated! There is no input that we can/want to sample next.')
+            list_cubes.append(len(interesting_domains)) 
+            plt.figure()
+            plt.plot(list_cubes)
+            plt.xlabel('Iteration number')
+            plt.ylabel('Number of cubes')
+            plt.title('Number of cubes vs iteration number')
+            plt.show()
 
+            break
+
+        dict_local_RKHS_norms = chosen_cube.compute_confidence_intervals_evaluation(RNN_model, m_PAC, alpha_bar, PAC=True)
+        chosen_cube.compute_safe_set()
+        chosen_cube.maximizer_routine(best_lower_bound_others=best_lower_bound_others)
+        chosen_cube.expander_routine()
+        if torch.any(torch.logical_or(chosen_cube.M, chosen_cube.G)):
+            x_new_current = chosen_cube.discr_domain[torch.logical_or(chosen_cube.M, chosen_cube.G)][torch.argmax(chosen_cube.var[torch.logical_or(chosen_cube.M, chosen_cube.G)])]
+            if not torch.any(torch.all(X_sample == x_new_current, axis=1)):
+                x_new = x_new_current
+                print(f'The chosen cube is {chosen_tuple} and the input is {x_new}, with PAC RKHS norm {chosen_cube.B}.')
+                if chosen_cube.tuple == (-1, -1):
+                    print("############################# ALERT #############################")
+        if not torch.any(torch.logical_or(chosen_cube.M, chosen_cube.G)) or torch.any(torch.all(X_sample == x_new_current, axis=1)):
+            if len(interesting_domains) == 0:
+                print('Our algorithm terminated! There is no input that we can/want to sample next.')
                 break
+            if chosen_cube.tuple in interesting_domains:
+                print("### Removed domain from interesting domains is:", chosen_cube.tuple)
+                interesting_domains.remove(chosen_cube.tuple)
+                if chosen_cube.tuple == (-1, -1):
+                    print("Global domain (-1, -1) was removed. Because double-checked.")
+                #     if not training:
+                #         list_cubes.append(len(interesting_domains))
+                #         plt.figure()
+                #         plt.plot(list_cubes)
+                #         break
+                print('Skipping this domain after PAC check')
+                if chosen_cube.tuple == (-1, -1):
+                    skip_global_domain = True
+                x_new_last_iteration = None if torch.any(x_new_last_iteration > np.infty) else x_new_last_iteration
+                continue
 
-            dict_local_RKHS_norms = chosen_cube.compute_confidence_intervals_evaluation(RNN_model, m_PAC, alpha_bar, PAC=True)
-            chosen_cube.compute_safe_set()
-            chosen_cube.maximizer_routine(best_lower_bound_others=best_lower_bound_others)
-            chosen_cube.expander_routine()
-            if torch.any(torch.logical_or(chosen_cube.M, chosen_cube.G)):
-                x_new_current = chosen_cube.discr_domain[torch.logical_or(chosen_cube.M, chosen_cube.G)][torch.argmax(chosen_cube.var[torch.logical_or(chosen_cube.M, chosen_cube.G)])]
-                if not torch.any(torch.all(X_sample == x_new_current, axis=1)):
-                    x_new = x_new_current
-                    print(f'The chosen cube is {chosen_tuple} and the input is {x_new}, with PAC RKHS norm {chosen_cube.B}.')
-                    if chosen_cube.tuple == (-1, -1):
-                        print("############################# ALERT #############################")
-            if not torch.any(torch.logical_or(chosen_cube.M, chosen_cube.G)) or torch.any(torch.all(X_sample == x_new_current, axis=1)):
-                if len(interesting_domains) == 0:
-                    if not training:
-                        print('Our algorithm terminated! There is no input that we can/want to sample next.')
-                    break
-                if chosen_cube.tuple in interesting_domains:
-                    print("### Removed domain from interesting domains is:", chosen_cube.tuple)
-                    interesting_domains.remove(chosen_cube.tuple)
-                    if chosen_cube.tuple == (-1, -1):
-                        print("Global domain (-1, -1) was removed. Because double-checked.")
-                    #     if not training:
-                    #         list_cubes.append(len(interesting_domains))
-                    #         plt.figure()
-                    #         plt.plot(list_cubes)
-                    #         break
-                    print('Skipping this domain after PAC check')
-                    if chosen_cube.tuple == (-1, -1):
-                        skip_global_domain = True
-                    x_new_last_iteration = None if torch.any(x_new_last_iteration > np.infty) else x_new_last_iteration
-                    continue
-        else:
-            try:
-                # Auxiliary action but no print
-                aux = copy.deepcopy(x_new)
-            except:
-                print(f'{run_type} terminated! There is no input that we can/want to sample next.')
-                break
-        if not training or training:
-            pass
+        pass
         y_new = gt.conduct_experiment(x=x_new, noise_std=noise_std)
         if y_new < gt.safety_threshold:
-            if training or run_type == 'SafeOpt':
-                warnings.warn('Sampled unsafe point!')  # this can happen with under-estimates RKHS norms
-            else:  # we do not tolerate unsafe sampling
-                raise Exception('Sampled unsafe point!')
+       # this can happen with under-estimates RKHS norms
+            raise Exception('Sampled unsafe point!')
         X_sample = torch.cat((X_sample, x_new.unsqueeze(0)), dim=0)
         Y_sample = torch.cat((Y_sample, y_new), dim=0)
-        if Furuta:  # always save in hardware;
-            with open('furuta_hardware_X_sample.pickle', 'wb') as handle:
-                pickle.dump(X_sample, handle, protocol=pickle.HIGHEST_PROTOCOL)
-            with open('furuta_hardware_Y_sample.pickle', 'wb') as handle:
-                pickle.dump(Y_sample, handle, protocol=pickle.HIGHEST_PROTOCOL)
-            print(f'Saved data. We currently gathered {len(Y_sample)} samples.')
-
-        # print(f'Interesting domains before: {interesting_domains}')
-
-        #print RKHS norm estimation for all cubes cube.B
-        for cube in global_cube_list:
-            print(f'RKHS norm estimation for cube {cube.tuple}: {cube.B}')
-
-
-        # Check if global cube (-1,-1) is in current interesting domains
-        if (-1, -1) in interesting_domains:
-            print("Before cube creation, Global cube (-1,-1) is in interesting domains.")
-        else:
-            print("Before cube creation, Global cube (-1,-1) is not in interesting domains.")
-
-        # if not global_approach:
-        #     X_distance = torch.max(torch.abs(X_sample - x_new), dim=1).values
-        #     effect_tensor = X_distance.unsqueeze(1) <= torch.arange(1, num_local_cubes + 1) * delta_cube
-        #     indices = torch.nonzero(effect_tensor, as_tuple=False)
-        #     indices_set = {(i.item(), k.item()) for i, k in indices}
-        #     interesting_domains |= indices_set # set union #### 
-        #     interesting_domains.add((-1, -1))
-
-
-        # print(f'Interesting domains after: {interesting_domains}')
-
-        # Which sub-domain changed through this new sample?
-        if not global_approach and chosen_cube.tuple == (-1, -1):
+   
+        if not global_approach:
             X_distance = torch.max(torch.abs(X_sample - x_new), dim=1).values
             effect_tensor = X_distance.unsqueeze(1) <= torch.arange(1, num_local_cubes + 1) * delta_cube
             indices = torch.nonzero(effect_tensor, as_tuple=False)
             indices_set = {(i.item(), k.item()) for i, k in indices}
-            interesting_domains |= {max(indices_set)}# set union #### added max operator here
+            interesting_domains |= indices_set # set union #### 
             interesting_domains.add((-1, -1))
 
-        # Check if global cube (-1,-1) is in current interesting domains
-        if (-1, -1) in interesting_domains:
-            print("After cube creation, Global cube (-1,-1) is in interesting domains.")
-        else:
-            print("After cube creation, Global cube (-1,-1) is not in interesting domains.")
-        if run_type == 'ours':
-            time.sleep(1)
+
         x_new_last_iteration = copy.deepcopy(x_new)
         del x_new  # There is no x_new for the next iteration
-    if training:
-        list_training = []
-        for key in dict_mean_RKHS_norms.keys():
-            list_training.append([dict_mean_RKHS_norms[key], dict_recip_variances[key], dict_local_RKHS_norms[key]])
-        return list_training  # all values that we got/need from ONE random RKHS function for training
-    if not training:
-        return X_sample, Y_sample, global_cube_list, gt.safety_threshold
+    return X_sample, Y_sample, global_cube_list, gt.safety_threshold
 
 
 if __name__ == '__main__':
@@ -718,351 +564,51 @@ if __name__ == '__main__':
     os.chdir(script_dir)
 
     # Hyperparameters
-    Furuta = False  # set to True to conduct policy parameter optimization on the Furuta pendulum
-    training = False  # set true to create training data for the RNN
-    Gym = False  # set to True to conduct OpenAI Gym experiments
-    if training and Gym:
-        raise Exception('Cannot get training runs with Gym')
     noise_std = 0.01  # standard deviation of noise, and in GPs
     delta_confidence = 0.01  # yields 99% confidence for safety proof.
     num_safe_points = 1  # singleton safe set
     num_iterations = 500  # iterations. We used 50 iterations to get training data and for the Gym experiments, 30 otherwise
     exploration_threshold = 0.1  # exploration threshold, see Sui et al. 2015
     n_dimensions = 1
-    points_per_axis = 1000  # 30 for 4D, 1000 for 1D, 500 for 2D, 100 for 3D, 8 for 6D. Depends on computational resources, also a "hyperparameter"
+    points_per_axis = 1001  # 30 for 4D, 1000 for 1D, 500 for 2D, 100 for 3D, 8 for 6D. Depends on computational resources, also a "hyperparameter"
 
     # Initialize our algorithm
     X_plot = compute_X_plot(n_dimensions, points_per_axis)
     delta_cube = 0.1  # hyperparameter
     num_local_cubes = 1
 
-    introductory_example = False  # Fig 1 if True, other numerical experiments if False
-    if introductory_example and Gym:
-        raise Exception("Cannot do both at once.")
-    if introductory_example:
-        compute_all_sets = True  # this is only if we want to plot the sets, Figure 1 of paper.
-    else:
-        compute_all_sets = False
-    reproduce_experiments = False  # set to True if you want to reproduce the experiments of either introductory or numerical example
-
-    # For training
-    if training:
-        compute_local_X_plot = False
-        hyperparameters = [noise_std, delta_confidence, exploration_threshold, delta_cube, num_local_cubes, compute_local_X_plot]
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            parallel = False 
-            number_of_random_RKHS_function = 1000
-            task_input = [(hyperparameters, num_iterations, X_plot, np.random.uniform(0.5, 30), training) for _ in range(number_of_random_RKHS_function)]
-            if parallel:
-                with mp.Pool() as pool:
-                    collected_training = pool.map(run, task_input)
-            else:
-                collected_list_training = []
-                for task in tqdm(task_input):
-                    list_training = run(task)
-                    collected_list_training.append(list_training)
-        with open('1D_training_data.pickle', 'wb') as handle:
-            pickle.dump(collected_list_training, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        print('Training finished!')
+    compute_all_sets= False
     # For "evaluating"
-    if not training and not Gym and not Furuta:
-        kappa_PAC = 0.01  # confidence PAC bounds
-        gamma_PAC = 0.1  # probability PAC bounds
-        m_PAC = 1000  # number of random RKHS function created for PAC bounds
-        alpha_bar = 1
-        RKHS_norm = 5  # np.random.uniform(0.5, 30)
-        gt = ground_truth(num_center_points=1000, X_plot=X_plot, RKHS_norm=RKHS_norm)
-        X_sample_init, Y_sample_init = initial_safe_samples(gt=gt, num_safe_points=num_safe_points)
-        X_sample = X_sample_init.clone()
-        Y_sample = Y_sample_init.clone()
-        if reproduce_experiments and not Gym:  # NOTE: experiments are still random, since sampling is noisy
-            if introductory_example:
-                noise_std = 0.05
-                with open('Experiments/SafeOpt_RKHS_intro/gt.pickle', 'rb') as handle:
-                    gt = dill.load(handle)
-                with open('Experiments/SafeOpt_RKHS_intro/X_sample.pickle', 'rb') as handle:
-                    X_sample = dill.load(handle)
-                with open('Experiments/SafeOpt_RKHS_intro/Y_sample.pickle', 'rb') as handle:
-                    Y_sample = dill.load(handle)
-            elif not Gym and n_dimensions == 1:
-                noise_std = 0.01
-                # with open('Github/gt.pickle', 'rb') as handle:
-                with open('1D_toy_experiments/gt.pickle', 'rb') as handle:
-                    gt = dill.load(handle)
-                # with open('Github/X_sample.pickle', 'rb') as handle:
-                with open('1D_toy_experiments/X_sample.pickle', 'rb') as handle:
-                    X_sample = dill.load(handle)
-                # with open('Github/Y_sample.pickle', 'rb') as handle:
-                with open('1D_toy_experiments/Y_sample.pickle', 'rb') as handle:
-                    Y_sample = dill.load(handle)
-            elif not Gym and n_dimensions == 2:
-                with open('Experiments/2D_toy_experiments/gt.pickle', 'rb') as handle:
-                    gt = dill.load(handle)
-                with open('Experiments/2D_toy_experiments/X_sample.pickle', 'rb') as handle:
-                    X_sample = dill.load(handle)
-                with open('Experiments/2D_toy_experiments/Y_sample.pickle', 'rb') as handle:
-                    Y_sample = dill.load(handle)
-        if introductory_example:
-            with torch.no_grad(), gpytorch.settings.fast_pred_var():
-                if reproduce_experiments:
-                    RKHS_norm = gt.RKHS_norm
-                compute_local_X_plot = False
-                run_type = 'SafeOpt'
-                global_approach = True
-
-                # Plot reconstruction for introductory experiment. Use following arguments in the plot function
-                # "global_cube_list_under[0]" for initial
-                # "global_cube_list_under[10]" to get plot after 10 iterations
-                # "global_cube_list_under[-1]" to get plot after 30 iterations
-
-                B = RKHS_norm/5
-                hyperparameters = [noise_std, delta_confidence, exploration_threshold, B, compute_all_sets, run_type]
-                X_sample_SO_under, Y_sample_SO_under, global_cube_list_under, _ = run(args=[hyperparameters, num_iterations, X_sample, Y_sample, gt, X_plot, global_approach, None, compute_local_X_plot, training])
-                plot_1D_SafeOpt_with_sets(global_cube_list_under[0], gt, save=False, title='SafeOpt under first')
-
-                B = RKHS_norm
-                hyperparameters = [noise_std, delta_confidence, exploration_threshold, B, compute_all_sets, run_type]
-                X_sample_SO_true, Y_sample_SO_true, global_cube_list_true, _ = run(args=[hyperparameters, num_iterations, X_sample, Y_sample, gt, X_plot, global_approach, None, compute_local_X_plot, training])
-                plot_1D_SafeOpt_with_sets(global_cube_list_true[-1], gt, save=False, title='SafeOpt true last')
-
-                B = RKHS_norm*5
-                hyperparameters = [noise_std, delta_confidence, exploration_threshold, B, compute_all_sets, run_type]
-                X_sample_SO_over, Y_sample_SO_over, global_cube_list_over, _ = run(args=[hyperparameters, num_iterations, X_sample, Y_sample, gt, X_plot, global_approach, None, compute_local_X_plot, training])
-                plot_1D_SafeOpt_with_sets(global_cube_list_over[0], gt, save=False, title='SafeOpt over first')
-
-        if not introductory_example:
-            with torch.no_grad(), gpytorch.settings.fast_pred_var():
-                if reproduce_experiments:
-                    RKHS_norm = gt.RKHS_norm
-                compute_local_X_plot = False
-                run_type = 'SafeOpt'
-                global_approach = True
-                B = RKHS_norm/5
-                hyperparameters = [noise_std, delta_confidence, exploration_threshold, B, compute_all_sets, run_type]
-                X_sample_SO_under, Y_sample_SO_under, global_cube_list_under, _ = run(args=[hyperparameters, num_iterations, X_sample, Y_sample, gt, X_plot, global_approach, None, compute_local_X_plot, training])
-                if n_dimensions == 1:
-                    plot_1D(X_sample_SO_under, Y_sample_SO_under, X_plot, gt.fX, title='SafeOpt under', safety_threshold=gt.safety_threshold, save=False)
-                elif n_dimensions == 2:
-                    plot_2D_contour(X_plot, gt.fX, X_sample_SO_under, Y_sample=Y_sample_SO_under, safety_threshold=gt.safety_threshold, title='SafeOpt under', levels=10, save=False) 
-
-                B = RKHS_norm*5
-                hyperparameters = [noise_std, delta_confidence, exploration_threshold, B, compute_all_sets, run_type]
-                X_sample_SO_over, Y_sample_SO_over, global_cube_list_over, _ = run(args=[hyperparameters, num_iterations, X_sample, Y_sample, gt, X_plot, global_approach, None, compute_local_X_plot, training])
-                if n_dimensions == 1:
-                    plot_1D(X_sample_SO_over, Y_sample_SO_over, X_plot, gt.fX, title='SafeOpt over', safety_threshold=gt.safety_threshold, save=False)
-                elif n_dimensions == 2:
-                    plot_2D_contour(X_plot, gt.fX, X_sample_SO_over, Y_sample=Y_sample_SO_over, safety_threshold=gt.safety_threshold, title='SafeOpt under', levels=10, save=False) 
-
-                compute_local_X_plot = True
-                run_type = 'ours'
-                hyperparameters = [noise_std, delta_confidence, alpha_bar, m_PAC, gamma_PAC, kappa_PAC,
-                                    exploration_threshold, delta_cube, num_local_cubes, run_type]
-                model_path = "rnn_model.pt"
-                hidden_size = 20
-                num_layers = 2
-                num_classes = 1
-                RNN_model = load_model(model_path, hidden_size, num_layers, num_classes)
-                global_approach = False
-                X_sample_our, Y_sample_our, global_cube, safety_threshold = run(args=[hyperparameters, num_iterations, X_sample, Y_sample, gt, X_plot, global_approach, RNN_model, compute_local_X_plot, training])
-                if n_dimensions == 1:
-                    plot_1D(X_sample=X_sample_our, Y_sample=Y_sample_our, X_plot=X_plot, fX=gt.fX, title='ours', safety_threshold=safety_threshold, save=False)
-                elif n_dimensions == 2:
-                    plot_2D_contour(X_plot, gt.fX, X_sample_our, Y_sample=Y_sample_our, safety_threshold=gt.safety_threshold, title='ours', levels=10, save=False)
-
-    if Gym:
-
-        kappa_PAC = 0.01  # confidence PAC bounds
-        gamma_PAC = 0.1  # probability PAC bounds
-        m_PAC = 1000  # number of random RKHS function created for PAC bounds
-        alpha_bar = 1
-        # environment = "InvertedPendulumSwingupBulletEnv-v0"
-        environment = "LunarLanderContinuous-v2"
-        # environment = "ReacherBulletEnv-v0"
-        # environment = "Swimmer-v4"
-        # environment = "MountainCarContinuous-v0"
-        # environment = "Hopper-v5"
-        # environment = "HalfCheetah-v5"
-        # environment = "BipedalWalker-v3"
-        noise_std = 0.01  # standard deviation
-        delta_confidence = 0.01  # yields 99% confidence for safety proof.
-        num_safe_points = 1  # singleton safe set
-        num_iterations = 50  # number of iterations
-        exploration_threshold = 0.1  # exploration threshold, see Sui et al. 2015
-        n_dimensions = 2  # depends on experiment
-        points_per_axis = 500  # 30 for 4D, 1000 for 1D, 400-500 for 2D, 100 for 3D, 15 for 5D
-        X_plot = compute_X_plot(n_dimensions, points_per_axis)
-        gte = ground_truth_experiment(environment=environment)
-        X_sample_init, Y_sample_init = gte.initial_safe_samples()
-        X_sample = X_sample_init.clone().to(torch.float32)
-        Y_sample = Y_sample_init.clone()
-        print(X_sample, Y_sample)
-        print(X_sample.dtype, Y_sample.dtype)
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            compute_local_X_plot = False
-            run_type = 'SafeOpt'
-
-            # Conservative RKHS norm
-            global_approach = True
-            B = 30
-            hyperparameters = [noise_std, delta_confidence, exploration_threshold, B, compute_all_sets, run_type]
-            print(run_type, B)
-            X_sample_SO_over, Y_sample_SO_over, _, best_lower_bound_SO_over, best_lower_bound_x_SO_over, _ = run(args=[hyperparameters, num_iterations, X_sample, Y_sample, gte, X_plot, global_approach, None, compute_local_X_plot, training])
-
-            # Not so conservative guess
-            B = 0.2
-            print(run_type, B)
-            hyperparameters = [noise_std, delta_confidence, exploration_threshold, B, run_type]
-            X_sample_SO_under, Y_sample_SO_under, global_cube_list_under, _ = run(args=[hyperparameters, num_iterations, X_sample, Y_sample, gt, X_plot, global_approach, None, compute_local_X_plot, training])
-        with torch.no_grad(), gpytorch.settings.fast_pred_var():
-            compute_local_X_plot = True
-            run_type = 'ours'
-            print(run_type)
-            hyperparameters = [noise_std, delta_confidence, alpha_bar, m_PAC, gamma_PAC, kappa_PAC,
-                                exploration_threshold, delta_cube, num_local_cubes, run_type]
-            RNN_model_path = "rnn_model.pt"
-            model_path = "rnn_model.pt"
-            hidden_size = 20
-            num_layers = 2
-            num_classes = 1
-            RNN_model = load_model(model_path, hidden_size, num_layers, num_classes)
-            global_approach = False
-            X_sample_our, Y_sample_our, global_cube, safety_threshold = run(args=[hyperparameters, num_iterations, X_sample, Y_sample, gt, X_plot, global_approach, RNN_model, compute_local_X_plot, training])
-            print("Finished; starting plots.")
-            plot_gym(Y_sample=Y_sample_SO_over, safety_threshold=0, title='SafeOpt over', save=False)
-            plot_gym(Y_sample=Y_sample_SO_under, safety_threshold=0, title='SafeOpt under', save=False)
-            plot_gym(Y_sample=Y_sample_our, safety_threshold=0, title='ours', save=False)
-            plot_gym_together(Y_sample_SO_under, Y_sample_SO_over, Y_sample_our, safety_threshold=0, title='experiment-together', save=False)
+    kappa_PAC = 0.01  # confidence PAC bounds
+    gamma_PAC = 0.1  # probability PAC bounds
+    m_PAC = 1000  # number of random RKHS function created for PAC bounds
+    alpha_bar = 1
+    RKHS_norm = 5  # np.random.uniform(0.5, 30)
     
-    if Furuta:
-        class ground_truth_Furuta():
-            def __init__(self, safety_threshold, use_simulator):
-                self.use_simulator = use_simulator
-                self.safety_threshold = safety_threshold
-                self.frequency = 200
-                self.freq_div = 4
-                self.k_scale = np.diag([-10, 100, 1, 1])  # scale it a priori.
-                self.last_two_entries = np.array([-1.5040040945983464, 3.0344775662414483])  # these are kept constant
-                with QubeBalanceEnv(use_simulator=use_simulator, frequency=self.frequency) as env:
-                    self.state_init = env.reset()
+    # Set random seed for reproducibility
+    seed = 21  # You can change this to any integer you want
+    gt = ground_truth(num_center_points=1000, X_plot=X_plot, RKHS_norm=RKHS_norm, seed=seed)
+    X_sample_init, Y_sample_init = initial_safe_samples(gt=gt, num_safe_points=num_safe_points)
+    X_sample = X_sample_init.clone()
+    Y_sample = Y_sample_init.clone()
 
-            def conduct_experiment(self, x, noise_std=None):
-                param = np.asarray(x, dtype=np.float64)
-                param = np.concatenate((param, self.last_two_entries))
-                self.state = copy.deepcopy(self.state_init)
-                reward = 0
-                if not self.use_simulator:
-                    IPS()
-                with QubeSwingupEnv(use_simulator=self.use_simulator, frequency=self.frequency) as env:
-                    env.reset()
-                    swing_up_ctrl = QubeFlipUpControl(sample_freq=self.frequency, env=env)
-                    upright = False
-                    i = 0
-                    while i < 1000:
-                        if upright:
-                            if np.abs(self.state[1]) < math.pi/2 and i % self.freq_div == 0:
-                                action = np.dot(np.dot(self.k_scale, param.flatten()), self.state)
-                            elif np.abs(self.state[1]) >= math.pi/2:
-                                action = np.array([0.0])
-                                print("failed during regular SafeOpt")
-                            self.state, rew, _, _ = env.step(action.flatten())
-                            reward += rew
-                            i += 1
-                        else:
-                            action = swing_up_ctrl.action(self.state)*1.4
-                            self.state, _, _, _ = env.step(action)
-                            if not self.use_simulator:
-                                print(np.linalg.norm(self.state))
-                            if np.linalg.norm(self.state) < 5e-2:
-                                print("swingup completed")
-                                upright = True
-                    print(f'Experiment done. For the parameter {x}, we received the reward {(reward/1000)}.')
-                return torch.tensor([reward/1000], dtype=torch.float32)
 
-            def try_furuta_real(self, param):
-                param = np.asarray(param, dtype=np.float64).flatten()
-                last_two_entries = self.last_two_entries
-                param = np.concatenate((param, last_two_entries))
-                use_simulator = self.use_simulator
-                frequency = 200
-                divider = 4
-                constr = np.inf
-                with QubeSwingupEnv(use_simulator=use_simulator, frequency=frequency) as env:
-                    state = env.reset()
-                    swing_up_ctrl = QubeFlipUpControl(sample_freq=frequency, env=env)
-                    upright = False
-                    i = 0
-                    reward = 0
-                    reward_LQR = 0
-                    R = 1
-                    Q = np.diag([5, 1, 1, 1])
-                    while i < 1000:
-                        if upright:
-                            if np.abs(state[1]) < math.pi/2 and i % divider == 0:
-                                action = np.dot(np.dot(self.k_scale, param), state)  # directly scale
-                            elif np.abs(state[1]) >= math.pi/2:
-                                action = np.array([0.0])
-                                raise Exception("failed")
-                            state, rew, _, _ = env.step(action.flatten())
-                            reward += rew
-                            reward_LQR += -(state.T@Q@state + (action**2*R))
-                            dist_constr = [np.pi/2 - np.abs(state[idx]) for idx in range(2)]
-                            if np.min(dist_constr) < constr:
-                                constr = np.min(dist_constr)
-                            i += 1
-                        else:
-                            action = swing_up_ctrl.action(state)*1.4
-                            state, _, _, _ = env.step(action)
-                            print(np.linalg.norm(state))
-                            if np.linalg.norm(state) < 5e-2:
-                                upright = True
-                return torch.tensor([reward/1000], dtype=torch.float32)
+    with torch.no_grad(), gpytorch.settings.fast_pred_var():
 
-        # Initializing hyperparameters
-        noise_std = 0.01  # standard deviation
-        delta_confidence = 0.01  # yields 99% confidence for safety proof.
-        num_safe_points = 1  # singleton safe set
-        num_iterations = 30  # number of iterations
-        exploration_threshold = 0.1  # exploration threshold, see Sui et al. 2015
-        n_dimensions = 2
-        points_per_axis = 100  # 30 for 4D, 1000 for 1D, 400-500 for 2D, 100 for 3D, 15 for 5D
-        X_plot = compute_X_plot(n_dimensions, points_per_axis)
-        delta_cube = 0.075  # We can make it larger if we have too little exploration. Currently, only sampling around (0, 0)
-        num_local_cubes = 3
-        use_simulator = False
-        gt_furuta = ground_truth_Furuta(safety_threshold=0.3, use_simulator=use_simulator)  # set use_simulator=False to use the hardware!
-        # Initial Furuta ground truth object
-        X_sample = torch.tensor([[0.2394, 0.4242]])  # initial safe policy
-        Y_sample = gt_furuta.try_furuta_real(param=X_sample)
         compute_local_X_plot = True
-        run_type = 'ours'
-        kappa_PAC = 0.01  # confidence PAC bounds
-        gamma_PAC = 0.1  # probability PAC bounds
-        m_PAC = 1000  # number of random RKHS function created for PAC bounds
-        alpha_bar = 1
         hyperparameters = [noise_std, delta_confidence, alpha_bar, m_PAC, gamma_PAC, kappa_PAC,
-                           exploration_threshold, delta_cube, num_local_cubes, run_type]
+                            exploration_threshold, delta_cube, num_local_cubes]
         model_path = "rnn_model.pt"
         hidden_size = 20
         num_layers = 2
         num_classes = 1
         RNN_model = load_model(model_path, hidden_size, num_layers, num_classes)
         global_approach = False
-        X_sample_our, Y_sample_our, global_cube, safety_threshold = run(args=[hyperparameters, num_iterations, X_sample, Y_sample, gt_furuta, X_plot, global_approach, RNN_model, compute_local_X_plot, training])        
-        with open('furuta_hardware_X_sample.pickle', 'wb') as handle:
-            pickle.dump(X_sample_our, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        with open('furuta_hardware_Y_sample.pickle', 'wb') as handle:
-            pickle.dump(Y_sample_our, handle, protocol=pickle.HIGHEST_PROTOCOL)
-        print('Done optimizing. Conducting a final experiment with the best policy parameter now.')
-        if not use_simulator:
-            IPS()
-        best_index = torch.argmax(Y_sample_our)
-        X_sample_best = X_sample_our[best_index, :]
-        Y_sample_best = gt_furuta.try_furuta_real(param=X_sample_best)
-        plt.figure()
-        colors = -(1/torch.log(Y_sample))*2
-        scatter = plt.scatter(X_sample[:, 0], X_sample[:, 1], s=100, c=colors, cmap='Blues')
-        cbar = plt.colorbar(scatter)
-        plt.xlabel('a1')
-        plt.ylabel('a2')
-        cbar.ax.set_yticks([min(colors), max(colors)])
-        cbar.ax.set_yticklabels(['Low', 'High'])
+
+        # test the args of run function
+
+        X_sample_our, Y_sample_our, global_cube, safety_threshold = run(args=[hyperparameters, num_iterations, X_sample, Y_sample, gt, X_plot, global_approach, RNN_model, compute_local_X_plot])
+        if n_dimensions == 1:
+            plot_1D(X_sample=X_sample_our, Y_sample=Y_sample_our, X_plot=X_plot, fX=gt.fX, title='ours', safety_threshold=safety_threshold, save=False)
+        elif n_dimensions == 2:
+            plot_2D_contour(X_plot, gt.fX, X_sample_our, Y_sample=Y_sample_our, safety_threshold=gt.safety_threshold, title='ours', levels=10, save=False)

@@ -5,12 +5,19 @@ from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 
 
-def plot_1D(X_sample, Y_sample, X_plot, fX, title, safety_threshold, save):
+def plot_1D(X_sample, Y_sample, X_plot, fX, title, safety_threshold, save, delta_cube=0.1):
     plt.figure()
     plt.plot(X_plot, fX, color='blue')
     plt.scatter(X_sample[1:], Y_sample[1:], color='black')
     plt.plot(X_plot, [safety_threshold]*len(X_plot), '-r')
     plt.plot(X_sample[0], Y_sample[0], 'd', color='magenta', markersize=10)
+    
+    # Add grid lines for intervals based on delta_cube
+    grid_size = int(1/delta_cube)  # Number of intervals
+    for i in range(grid_size + 1):
+        x_pos = i * delta_cube
+        plt.axvline(x=x_pos, color='gray', linestyle='--', alpha=0.3)
+    
     plt.xlabel('$a$')
     plt.ylabel('$y$')
     plt.title(title)
@@ -34,28 +41,37 @@ def plot_2D_scatter(X_plot, fX, X_sample, safety_threshold):
     plt.ylabel('$x_2$')
 
 
-def plot_2D_contour(X_plot, fX, X_sample, Y_sample, safety_threshold, title, levels=10, save=False):
+def plot_2D_contour(X_plot, fX, X_sample, Y_sample, safety_threshold, title, levels=10, save=False, delta_cube=0.1):
     division_points = int(np.sqrt(len(fX)))
     x1 = X_plot[:, 0].reshape(division_points, division_points)
     x2 = X_plot[:, 1].reshape(division_points, division_points)
-
-    # Define contour levels
 
     # Create contour plot using Matplotlib
     plt.figure()
     contour = plt.contour(x1, x2, fX.reshape(division_points, division_points), levels=levels, cmap='seismic')
     plt.colorbar(contour)
+    
+    # Add grid lines based on delta_cube
+    grid_size = int(1/delta_cube)  # Number of intervals
+    for i in range(grid_size + 1):
+        x_pos = i * delta_cube
+        y_pos = i * delta_cube
+        plt.axvline(x=x_pos, color='gray', linestyle='--', alpha=0.3)
+        plt.axhline(y=y_pos, color='gray', linestyle='--', alpha=0.3)
+    
     plt.xlabel('$a_1$')
     plt.ylabel('$a_2$')
     plt.title(f'{title} threshold: {safety_threshold}')
     plt.gca().set_aspect('equal', adjustable='box')
     plt.grid(False)
+    
     # Color the contours based on their value
     plt.scatter(X_sample[1:, 0], X_sample[1:, 1], color='black', s=50)
     plt.scatter(X_sample[0, 0], X_sample[0, 1], color='magenta', s=50)
     for i in range(len(Y_sample)):
         if Y_sample[i] < safety_threshold:
-            plt.scatter(X_sample[i, 0], X_sample[i, 1], marker='s', color='red', s=150)  # Corrected this line
+            plt.scatter(X_sample[i, 0], X_sample[i, 1], marker='s', color='red', s=150)
+    
     if save:
         tikz_code = tikzplotlib.get_tikz_code(float_format=".5g")
         with open(f'Experiments/2D_toy_experiments/{title}.tex', 'w') as f:
